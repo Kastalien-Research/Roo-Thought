@@ -1,0 +1,164 @@
+{
+	"extracted_at": "2026-01-17T13:00:00Z",
+	"total_requirements": 52,
+	"by_spec": {
+		"01-progress": {
+			"functional": [
+				{
+					"id": "PROG-FR-1",
+					"text": "Generate unique progress tokens for outgoing requests",
+					"priority": "MUST"
+				},
+				{ "id": "PROG-FR-2", "text": "Include progressToken in request _meta field", "priority": "MUST" },
+				{
+					"id": "PROG-FR-3",
+					"text": "Register notification handler for notifications/progress",
+					"priority": "MUST"
+				},
+				{ "id": "PROG-FR-4", "text": "Track active progress tokens in memory", "priority": "MUST" },
+				{ "id": "PROG-FR-5", "text": "Clean up token tracking on request completion", "priority": "MUST" },
+				{ "id": "PROG-FR-6", "text": "Forward progress updates to webview", "priority": "SHOULD" },
+				{ "id": "PROG-FR-7", "text": "Emit progress for sampling handler phases", "priority": "SHOULD" },
+				{ "id": "PROG-FR-8", "text": "Emit progress for elicitation handler phases", "priority": "SHOULD" },
+				{ "id": "PROG-FR-9", "text": "Support floating-point progress values", "priority": "MUST" },
+				{ "id": "PROG-FR-10", "text": "Validate progress is monotonically increasing", "priority": "SHOULD" }
+			],
+			"non_functional": [
+				{ "id": "PROG-NFR-1", "text": "Progress updates must not block request handling", "priority": "MUST" },
+				{ "id": "PROG-NFR-2", "text": "Rate limit progress forwarding to UI", "priority": "SHOULD" },
+				{ "id": "PROG-NFR-3", "text": "Token generation must be fast (<1ms)", "priority": "MUST" }
+			]
+		},
+		"02-cancellation": {
+			"functional": [
+				{ "id": "CANCEL-FR-1", "text": "Track pending outgoing requests with requestId", "priority": "MUST" },
+				{ "id": "CANCEL-FR-2", "text": "Expose cancelRequest(requestId, reason?) method", "priority": "MUST" },
+				{
+					"id": "CANCEL-FR-3",
+					"text": "Register notification handler for notifications/cancelled",
+					"priority": "MUST"
+				},
+				{ "id": "CANCEL-FR-4", "text": "Abort pending sampling requests on cancellation", "priority": "MUST" },
+				{
+					"id": "CANCEL-FR-5",
+					"text": "Abort pending elicitation requests on cancellation",
+					"priority": "MUST"
+				},
+				{
+					"id": "CANCEL-FR-6",
+					"text": "MUST NOT allow cancellation of initialize request",
+					"priority": "MUST"
+				},
+				{
+					"id": "CANCEL-FR-7",
+					"text": "Ignore cancellation for unknown/completed requests",
+					"priority": "MUST"
+				},
+				{ "id": "CANCEL-FR-8", "text": "Include reason in cancellation notification", "priority": "SHOULD" },
+				{ "id": "CANCEL-FR-9", "text": "Expose abort signal for UI cancel button", "priority": "SHOULD" },
+				{ "id": "CANCEL-FR-10", "text": "Log cancellation events for debugging", "priority": "SHOULD" }
+			],
+			"non_functional": [
+				{
+					"id": "CANCEL-NFR-1",
+					"text": "Cancellation notification must be fire-and-forget",
+					"priority": "MUST"
+				},
+				{ "id": "CANCEL-NFR-2", "text": "Handle race conditions gracefully", "priority": "MUST" },
+				{ "id": "CANCEL-NFR-3", "text": "No resource leaks from cancelled requests", "priority": "MUST" }
+			]
+		},
+		"03-tasks-core": {
+			"functional": [
+				{ "id": "TASK-FR-1", "text": "Declare tasks capability during initialization", "priority": "MUST" },
+				{
+					"id": "TASK-FR-2",
+					"text": "Check server's tasks capability before task-augmenting",
+					"priority": "MUST"
+				},
+				{
+					"id": "TASK-FR-3",
+					"text": "Check tool's execution.taskSupport before task-augmenting",
+					"priority": "MUST"
+				},
+				{ "id": "TASK-FR-4", "text": "Send task-augmented tools/call with optional TTL", "priority": "MUST" },
+				{ "id": "TASK-FR-5", "text": "Handle CreateTaskResult response", "priority": "MUST" },
+				{ "id": "TASK-FR-6", "text": "Implement tasks/get polling", "priority": "MUST" },
+				{ "id": "TASK-FR-7", "text": "Implement tasks/result retrieval", "priority": "MUST" },
+				{ "id": "TASK-FR-8", "text": "Handle input_required status", "priority": "MUST" },
+				{ "id": "TASK-FR-9", "text": "Implement tasks/list with pagination", "priority": "SHOULD" },
+				{ "id": "TASK-FR-10", "text": "Implement tasks/cancel", "priority": "MUST" },
+				{ "id": "TASK-FR-11", "text": "Handle notifications/tasks/status", "priority": "SHOULD" },
+				{
+					"id": "TASK-FR-12",
+					"text": "Include io.modelcontextprotocol/related-task in requests",
+					"priority": "MUST"
+				},
+				{
+					"id": "TASK-FR-13",
+					"text": "Continue using progressToken throughout task lifetime",
+					"priority": "MUST"
+				}
+			],
+			"non_functional": [
+				{ "id": "TASK-NFR-1", "text": "Polling must not block main thread", "priority": "MUST" },
+				{ "id": "TASK-NFR-2", "text": "Memory cleanup for completed tasks", "priority": "MUST" },
+				{ "id": "TASK-NFR-3", "text": "Handle task expiry gracefully", "priority": "MUST" }
+			]
+		},
+		"04-tasks-receiver": {
+			"functional": [
+				{
+					"id": "RECV-FR-1",
+					"text": "Declare tasks.requests.sampling.createMessage capability",
+					"priority": "MUST"
+				},
+				{
+					"id": "RECV-FR-2",
+					"text": "Declare tasks.requests.elicitation.create capability",
+					"priority": "MUST"
+				},
+				{ "id": "RECV-FR-3", "text": "Detect task param in sampling/elicitation requests", "priority": "MUST" },
+				{
+					"id": "RECV-FR-4",
+					"text": "Generate unique task IDs (cryptographically secure)",
+					"priority": "MUST"
+				},
+				{
+					"id": "RECV-FR-5",
+					"text": "Return CreateTaskResult for task-augmented requests",
+					"priority": "MUST"
+				},
+				{ "id": "RECV-FR-6", "text": "Process request asynchronously after task creation", "priority": "MUST" },
+				{ "id": "RECV-FR-7", "text": "Track task status (state machine)", "priority": "MUST" },
+				{ "id": "RECV-FR-8", "text": "Implement tasks/get handler", "priority": "MUST" },
+				{ "id": "RECV-FR-9", "text": "Implement tasks/result handler", "priority": "MUST" },
+				{ "id": "RECV-FR-10", "text": "Implement tasks/list handler", "priority": "SHOULD" },
+				{ "id": "RECV-FR-11", "text": "Implement tasks/cancel handler", "priority": "MUST" },
+				{
+					"id": "RECV-FR-12",
+					"text": "Send notifications/tasks/status on state changes",
+					"priority": "SHOULD"
+				},
+				{
+					"id": "RECV-FR-13",
+					"text": "Include io.modelcontextprotocol/related-task in results",
+					"priority": "MUST"
+				},
+				{ "id": "RECV-FR-14", "text": "Respect TTL for task cleanup", "priority": "MUST" },
+				{ "id": "RECV-FR-15", "text": "Reject cancel for terminal tasks with -32602", "priority": "MUST" }
+			],
+			"non_functional": [
+				{ "id": "RECV-NFR-1", "text": "Task ID must be cryptographically secure", "priority": "MUST" },
+				{ "id": "RECV-NFR-2", "text": "Result retrieval must not leak to other contexts", "priority": "MUST" },
+				{ "id": "RECV-NFR-3", "text": "Memory cleanup for expired tasks", "priority": "MUST" }
+			]
+		}
+	},
+	"summary": {
+		"MUST": 35,
+		"SHOULD": 12,
+		"MAY": 0,
+		"NFR": 12
+	}
+}

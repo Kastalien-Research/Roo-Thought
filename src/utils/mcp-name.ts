@@ -3,6 +3,36 @@
  * API function name requirements across all providers.
  */
 
+import { validateToolName } from "@modelcontextprotocol/sdk/shared/toolNameValidation.js"
+
+/**
+ * Validate a tool name against the MCP spec and log warnings if non-compliant.
+ * This is a pre-check before sanitization - it doesn't block, just warns.
+ *
+ * Per MCP spec (SEP: Specify Format for Tool Names):
+ * - Tool names SHOULD be 1-128 characters
+ * - Allowed: A-Z, a-z, 0-9, _, -, .
+ * - Tool names are case-sensitive
+ * - SHOULD NOT contain spaces, commas, or other special characters
+ *
+ * @param name - The tool name to validate
+ * @param serverName - Optional server name for context in warnings
+ * @returns true if valid, false if has warnings (still continues)
+ */
+export function validateMcpToolName(name: string, serverName?: string): boolean {
+	const result = validateToolName(name)
+
+	if (result.warnings.length > 0) {
+		const context = serverName ? ` from server "${serverName}"` : ""
+		console.warn(`[MCP] Tool name "${name}"${context} has validation warnings:`)
+		for (const warning of result.warnings) {
+			console.warn(`  - ${warning}`)
+		}
+	}
+
+	return result.isValid
+}
+
 /**
  * Separator used between MCP prefix, server name, and tool name.
  * We use "--" (double hyphen) because:

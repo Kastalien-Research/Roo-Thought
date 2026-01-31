@@ -1,0 +1,61 @@
+{
+	"$schema": "https://claude.ai/code/hooks-schema.json",
+	"description": "Ulysses Protocol hooks for Claude Code - hard gates that enforce ground truth",
+	"hooks": {
+		"pre_tool_use": [
+			{
+				"name": "ulysses-import-check",
+				"description": "Block edits that import from non-installed packages",
+				"matcher": {
+					"tool_name": ["Edit", "Write"],
+					"file_pattern": "**/*.ts"
+				},
+				"command": "bash .claude/hooks/ulysses-hooks.sh pre-edit \"${FILE_PATH}\" \"${NEW_CONTENT}\"",
+				"on_failure": "block",
+				"timeout_ms": 10000
+			},
+			{
+				"name": "ulysses-mock-warning",
+				"description": "Warn when creating tests that mock external modules",
+				"matcher": {
+					"tool_name": ["Edit", "Write"],
+					"file_pattern": "**/*.{test,spec}.ts"
+				},
+				"command": "bash .claude/hooks/ulysses-hooks.sh mock-check \"${FILE_PATH}\"",
+				"on_failure": "warn",
+				"timeout_ms": 5000
+			}
+		],
+		"post_tool_use": [
+			{
+				"name": "ulysses-dependency-verify",
+				"description": "Verify dependencies after package.json changes",
+				"matcher": {
+					"tool_name": ["Edit", "Write"],
+					"file_pattern": "**/package.json"
+				},
+				"command": "bash .claude/hooks/ulysses-hooks.sh dependency \"${FILE_PATH}\"",
+				"on_failure": "block",
+				"timeout_ms": 120000
+			}
+		],
+		"custom": [
+			{
+				"name": "ulysses-checkpoint",
+				"description": "Manual checkpoint verification - call between major steps",
+				"trigger": "manual",
+				"command": "bash .claude/hooks/ulysses-hooks.sh checkpoint \"${CHECKPOINT_ID}\" \"${DESCRIPTION}\"",
+				"on_failure": "block",
+				"timeout_ms": 180000
+			}
+		]
+	},
+	"known_gaps": [
+		"pre-edit hook uses regex - unusual import syntax could bypass",
+		"mock warning is warn not block - can be ignored",
+		"checkpoint trigger is manual - agent can skip calling it",
+		"no meta-hook verifies hooks actually ran",
+		"hooks assume pnpm/tsc work - unrelated errors might train agent to ignore",
+		"written by the agent being governed - inherits agent blind spots"
+	]
+}

@@ -49,6 +49,8 @@ import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationR
 import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
 import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
+import { McpSamplingApproval } from "./McpSamplingApproval"
+import { McpElicitationForm } from "./McpElicitationForm"
 import { ChatTextArea } from "./ChatTextArea"
 import { MAX_IMAGES_PER_MESSAGE } from "./ChatView"
 import { useSelectedModel } from "../ui/hooks/useSelectedModel"
@@ -284,6 +286,30 @@ export const ChatRowContent = ({
 				if (mcpServerUse === undefined) {
 					return [null, null]
 				}
+				// Determine title based on MCP request type
+				let mcpTitle: string
+				switch (mcpServerUse.type) {
+					case "use_mcp_tool":
+						mcpTitle = t("chat:mcp.wantsToUseTool", { serverName: mcpServerUse.serverName })
+						break
+					case "access_mcp_resource":
+						mcpTitle = t("chat:mcp.wantsToAccessResource", { serverName: mcpServerUse.serverName })
+						break
+					case "mcp_sampling":
+						mcpTitle = t("chat:mcp.requestsSampling", {
+							serverName: mcpServerUse.serverName,
+							defaultValue: "{{serverName}} requests LLM completion",
+						})
+						break
+					case "mcp_elicitation":
+						mcpTitle = t("chat:mcp.requestsElicitation", {
+							serverName: mcpServerUse.serverName,
+							defaultValue: "{{serverName}} requests information",
+						})
+						break
+					default:
+						mcpTitle = t("chat:mcp.wantsToAccessResource", { serverName: mcpServerUse.serverName })
+				}
 				return [
 					isMcpServerResponding ? (
 						<ProgressIndicator />
@@ -292,11 +318,7 @@ export const ChatRowContent = ({
 							className="codicon codicon-server"
 							style={{ color: normalColor, marginBottom: "-1.5px" }}></span>
 					),
-					<span style={{ color: normalColor, fontWeight: "bold" }}>
-						{mcpServerUse.type === "use_mcp_tool"
-							? t("chat:mcp.wantsToUseTool", { serverName: mcpServerUse.serverName })
-							: t("chat:mcp.wantsToAccessResource", { serverName: mcpServerUse.serverName })}
-					</span>,
+					<span style={{ color: normalColor, fontWeight: "bold" }}>{mcpTitle}</span>,
 				]
 			case "completion_result":
 				return [
@@ -1590,6 +1612,31 @@ export const ChatRowContent = ({
 										server={server}
 										useMcpServer={useMcpServer}
 										alwaysAllowMcp={alwaysAllowMcp}
+									/>
+								)}
+								{useMcpServer.type === "mcp_sampling" && useMcpServer.samplingRequest && (
+									<McpSamplingApproval
+										serverName={useMcpServer.serverName}
+										request={useMcpServer.samplingRequest}
+									/>
+								)}
+								{useMcpServer.type === "mcp_elicitation" && useMcpServer.elicitationRequest && (
+									<McpElicitationForm
+										serverName={useMcpServer.serverName}
+										request={useMcpServer.elicitationRequest}
+										onSubmit={(data) => {
+											vscode.postMessage({
+												type: "askResponse",
+												askResponse: "yesButtonClicked",
+												text: JSON.stringify(data),
+											})
+										}}
+										onCancel={() => {
+											vscode.postMessage({
+												type: "askResponse",
+												askResponse: "noButtonClicked",
+											})
+										}}
 									/>
 								)}
 							</div>

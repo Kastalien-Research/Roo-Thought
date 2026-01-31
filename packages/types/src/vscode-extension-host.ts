@@ -17,7 +17,7 @@ import type { TodoItem } from "./todo.js"
 import type { CloudUserInfo, CloudOrganizationMembership, OrganizationAllowList, ShareVisibility } from "./cloud.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
 import type { GitCommit } from "./git.js"
-import type { McpServer } from "./mcp.js"
+import type { McpServer, McpSamplingRequest, McpElicitationRequest } from "./mcp.js"
 import type { ModelRecord, RouterModels } from "./model.js"
 
 /**
@@ -94,6 +94,11 @@ export interface ExtensionMessage {
 		| "claudeCodeRateLimits"
 		| "customToolsResult"
 		| "modes"
+		| "mcpProgress"
+		| "mcpCancelled"
+		| "mcpTaskStatus"
+		| "mcpLogMessage"
+		| "mcpResourceUpdated"
 	text?: string
 	payload?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	checkpointWarning?: {
@@ -760,11 +765,15 @@ export type BrowserActionResult = {
 
 export interface ClineAskUseMcpServer {
 	serverName: string
-	type: "use_mcp_tool" | "access_mcp_resource"
+	type: "use_mcp_tool" | "access_mcp_resource" | "mcp_sampling" | "mcp_elicitation"
 	toolName?: string
 	arguments?: string
 	uri?: string
 	response?: string
+	// MCP Sampling (server requests LLM completion)
+	samplingRequest?: McpSamplingRequest
+	// MCP Elicitation (server requests user input)
+	elicitationRequest?: McpElicitationRequest
 }
 
 export interface ClineApiReqInfo {

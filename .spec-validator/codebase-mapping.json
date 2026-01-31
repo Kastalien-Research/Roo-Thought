@@ -1,0 +1,111 @@
+{
+	"generated_at": "2026-01-17T13:30:00Z",
+	"mapping_summary": {
+		"NOVEL": 48,
+		"PARTIAL": 4,
+		"EXISTING": 0
+	},
+	"by_spec": {
+		"01-progress": {
+			"PROG-FR-1": { "status": "NOVEL", "notes": "No progressToken generation found" },
+			"PROG-FR-2": { "status": "NOVEL", "notes": "No _meta.progressToken in requests" },
+			"PROG-FR-3": { "status": "NOVEL", "notes": "No notifications/progress handler" },
+			"PROG-FR-4": { "status": "NOVEL", "notes": "No progress token tracking" },
+			"PROG-FR-5": { "status": "NOVEL", "notes": "No cleanup logic for tokens" },
+			"PROG-FR-6": { "status": "PARTIAL", "notes": "postMessageToWebview exists, needs progress payload type" },
+			"PROG-FR-7": { "status": "NOVEL", "notes": "Sampling handler exists but no progress emission" },
+			"PROG-FR-8": { "status": "NOVEL", "notes": "Elicitation handler exists but no progress emission" },
+			"PROG-FR-9": { "status": "NOVEL", "notes": "No floating-point progress handling" },
+			"PROG-FR-10": { "status": "NOVEL", "notes": "No monotonic validation" },
+			"PROG-NFR-1": { "status": "NOVEL", "notes": "No async progress handling" },
+			"PROG-NFR-2": { "status": "NOVEL", "notes": "No rate limiting" },
+			"PROG-NFR-3": { "status": "NOVEL", "notes": "No benchmark for token generation" }
+		},
+		"02-cancellation": {
+			"CANCEL-FR-1": { "status": "NOVEL", "notes": "No request tracking with requestId" },
+			"CANCEL-FR-2": { "status": "NOVEL", "notes": "No cancelRequest method" },
+			"CANCEL-FR-3": { "status": "NOVEL", "notes": "No notifications/cancelled handler" },
+			"CANCEL-FR-4": { "status": "PARTIAL", "notes": "Sampling handler exists, needs AbortController" },
+			"CANCEL-FR-5": { "status": "PARTIAL", "notes": "Elicitation handler exists, needs AbortController" },
+			"CANCEL-FR-6": { "status": "NOVEL", "notes": "No protection for initialize" },
+			"CANCEL-FR-7": { "status": "NOVEL", "notes": "No graceful ignore for unknown requests" },
+			"CANCEL-FR-8": { "status": "NOVEL", "notes": "No reason in cancellation" },
+			"CANCEL-FR-9": { "status": "NOVEL", "notes": "No UI cancel button integration" },
+			"CANCEL-FR-10": { "status": "NOVEL", "notes": "No cancellation logging" },
+			"CANCEL-NFR-1": { "status": "NOVEL", "notes": "Fire-and-forget not implemented" },
+			"CANCEL-NFR-2": { "status": "NOVEL", "notes": "No race condition handling" },
+			"CANCEL-NFR-3": { "status": "NOVEL", "notes": "No leak prevention" }
+		},
+		"03-tasks-core": {
+			"TASK-FR-1": { "status": "NOVEL", "notes": "No tasks capability declaration" },
+			"TASK-FR-2": { "status": "NOVEL", "notes": "No server tasks capability check" },
+			"TASK-FR-3": { "status": "NOVEL", "notes": "No tool.execution.taskSupport check" },
+			"TASK-FR-4": { "status": "NOVEL", "notes": "No task-augmented tools/call" },
+			"TASK-FR-5": { "status": "NOVEL", "notes": "No CreateTaskResult handling" },
+			"TASK-FR-6": { "status": "NOVEL", "notes": "No tasks/get polling" },
+			"TASK-FR-7": { "status": "NOVEL", "notes": "No tasks/result retrieval" },
+			"TASK-FR-8": { "status": "NOVEL", "notes": "No input_required handling" },
+			"TASK-FR-9": { "status": "NOVEL", "notes": "No tasks/list with pagination" },
+			"TASK-FR-10": { "status": "NOVEL", "notes": "No tasks/cancel" },
+			"TASK-FR-11": { "status": "NOVEL", "notes": "No notifications/tasks/status handler" },
+			"TASK-FR-12": { "status": "NOVEL", "notes": "No related-task header" },
+			"TASK-FR-13": { "status": "NOVEL", "notes": "No progressToken throughout task lifetime" },
+			"TASK-NFR-1": { "status": "NOVEL", "notes": "No async polling" },
+			"TASK-NFR-2": { "status": "NOVEL", "notes": "No task memory cleanup" },
+			"TASK-NFR-3": { "status": "NOVEL", "notes": "No expiry handling" }
+		},
+		"04-tasks-receiver": {
+			"RECV-FR-1": {
+				"status": "PARTIAL",
+				"notes": "sampling capability declared but not tasks.requests.sampling.createMessage"
+			},
+			"RECV-FR-2": { "status": "NOVEL", "notes": "No tasks.requests.elicitation.create" },
+			"RECV-FR-3": { "status": "NOVEL", "notes": "No task param detection" },
+			"RECV-FR-4": { "status": "NOVEL", "notes": "crypto.randomUUID exists but not for task IDs" },
+			"RECV-FR-5": { "status": "NOVEL", "notes": "No CreateTaskResult return" },
+			"RECV-FR-6": { "status": "NOVEL", "notes": "No async processing after task creation" },
+			"RECV-FR-7": { "status": "NOVEL", "notes": "No task state machine" },
+			"RECV-FR-8": { "status": "NOVEL", "notes": "No tasks/get handler" },
+			"RECV-FR-9": { "status": "NOVEL", "notes": "No tasks/result handler" },
+			"RECV-FR-10": { "status": "NOVEL", "notes": "No tasks/list handler" },
+			"RECV-FR-11": { "status": "NOVEL", "notes": "No tasks/cancel handler" },
+			"RECV-FR-12": { "status": "NOVEL", "notes": "No notifications/tasks/status emission" },
+			"RECV-FR-13": { "status": "NOVEL", "notes": "No related-task in results" },
+			"RECV-FR-14": { "status": "NOVEL", "notes": "No TTL cleanup" },
+			"RECV-FR-15": { "status": "NOVEL", "notes": "No -32602 for terminal tasks" },
+			"RECV-NFR-1": { "status": "NOVEL", "notes": "crypto.randomUUID available" },
+			"RECV-NFR-2": { "status": "NOVEL", "notes": "No context isolation" },
+			"RECV-NFR-3": { "status": "NOVEL", "notes": "No memory cleanup" }
+		}
+	},
+	"existing_patterns": {
+		"setRequestHandler": {
+			"file": "src/services/mcp/McpHub.ts",
+			"lines": [713, 726, 828],
+			"usage": ["ListRootsRequestSchema", "CreateMessageRequestSchema", "ElicitRequestSchema"]
+		},
+		"postMessageToWebview": {
+			"file": "src/services/mcp/McpHub.ts",
+			"line": 1624,
+			"notes": "Available for IPC to webview"
+		},
+		"crypto.randomUUID": {
+			"files": ["src/core/task/Task.ts:485", "src/core/task/Task.ts:500"],
+			"notes": "Pattern for UUID generation exists"
+		},
+		"taskAbortPattern": {
+			"file": "src/core/task/Task.ts",
+			"notes": "Task uses this.abort boolean, NOT AbortController"
+		}
+	},
+	"blocker_verification": {
+		"B-1": {
+			"description": "task.ask() AbortSignal support",
+			"verified": true,
+			"finding": "task.ask() does NOT accept AbortSignal parameter",
+			"signature": "async ask(type: ClineAsk, text?: string, partial?: boolean, progressStatus?: ToolProgressStatus, isProtected?: boolean)",
+			"current_abort": "Uses internal this.abort boolean at line 1261",
+			"resolution_required": "Add optional { signal?: AbortSignal } parameter to task.ask()"
+		}
+	}
+}
