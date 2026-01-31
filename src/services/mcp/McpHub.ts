@@ -1,5 +1,6 @@
 import * as fs from "fs/promises"
 import * as path from "path"
+import crypto from "crypto"
 
 import * as vscode from "vscode"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
@@ -9,23 +10,65 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import ReconnectingEventSource from "reconnecting-eventsource"
 import {
 	CallToolResultSchema,
+	CompleteResultSchema,
+	GetPromptResultSchema,
+	ListPromptsResultSchema,
 	ListResourcesResultSchema,
 	ListResourceTemplatesResultSchema,
 	ListToolsResultSchema,
 	ReadResourceResultSchema,
+	// Progress tracking (MCP 2025-11-25)
+	ProgressTokenSchema,
+	ProgressNotificationSchema,
+	// Tasks (MCP 2025-11-25)
+	TaskSchema,
+	CreateTaskResultSchema,
+	GetTaskRequestSchema,
+	GetTaskResultSchema,
+	ListTasksRequestSchema,
+	ListTasksResultSchema,
+	CancelTaskRequestSchema,
+	CancelTaskResultSchema,
+	TaskStatusNotificationSchema,
+	// Roots (MCP 2025-11-25) - server requests workspace roots from client
+	ListRootsRequestSchema,
+	RootsListChangedNotificationSchema,
+	// Sampling (MCP 2025-11-25) - server requests LLM completions from client
+	CreateMessageRequestSchema,
+	// Elicitation (MCP 2025-11-25) - server requests user input from client
+	ElicitRequestSchema,
+	// Logging (MCP 2025-11-25) - server sends log messages to client
+	LoggingMessageNotificationSchema,
+	// Resource/Tool/Prompt list change notifications
+	ResourceListChangedNotificationSchema,
+	ToolListChangedNotificationSchema,
+	PromptListChangedNotificationSchema,
+	ResourceUpdatedNotificationSchema,
+	// Cancellation notifications
+	CancelledNotificationSchema,
 } from "@modelcontextprotocol/sdk/types.js"
+import type { SamplingMessage, Tool as McpSdkTool, PrimitiveSchemaDefinition } from "@modelcontextprotocol/sdk/types.js"
+import { McpError, ErrorCode } from "@modelcontextprotocol/sdk/types.js"
+
+import { registerAllHandlers, type HandlerContext } from "./handlers"
 import chokidar, { FSWatcher } from "chokidar"
 import delay from "delay"
 import deepEqual from "fast-deep-equal"
 import { z } from "zod"
 
 import type {
+	McpPrompt,
+	McpPromptResponse,
 	McpResource,
 	McpResourceResponse,
 	McpResourceTemplate,
 	McpServer,
 	McpTool,
 	McpToolCallResponse,
+	McpSamplingRequest,
+	McpSamplingTool,
+	McpElicitationRequest,
+	ClineAskUseMcpServer,
 } from "@roo-code/types"
 
 import { t } from "../../i18n"
@@ -38,7 +81,9 @@ import { fileExistsAtPath } from "../../utils/fs"
 import { arePathsEqual, getWorkspacePath } from "../../utils/path"
 import { injectVariables } from "../../utils/config"
 import { safeWriteJson } from "../../utils/safeWriteJson"
-import { sanitizeMcpName } from "../../utils/mcp-name"
+import { sanitizeMcpName, validateMcpToolName } from "../../utils/mcp-name"
+import { UriTemplate } from "@modelcontextprotocol/sdk/shared/uriTemplate.js"
+import { getDisplayName as sdkGetDisplayName } from "@modelcontextprotocol/sdk/shared/metadataUtils.js"
 
 // Discriminated union for connection states
 export type ConnectedMcpConnection = {
@@ -162,6 +207,41 @@ export class McpHub {
 	private flagResetTimer?: NodeJS.Timeout
 	private sanitizedNameRegistry: Map<string, string> = new Map()
 
+	// Progress tracking (MCP 2025-11-25)
+	// Maps progressToken -> { serverName, callback, lastProgress }
+	private activeProgressTokens: Map<
+		string | number,
+		{
+			serverName: string
+			callback?: (progress: number, total?: number, message?: string) => void
+			lastProgress: number
+		}
+	> = new Map()
+
+	// Request cancellation tracking (MCP 2025-11-25)
+	// Maps requestId -> AbortController for pending requests
+	private pendingRequests: Map<string | number, { serverName: string; controller: AbortController }> = new Map()
+
+	// Tasks tracking (MCP 2025-11-25)
+	// Maps taskId -> task state for long-running operations
+	private activeTasks: Map<
+		string,
+		{
+			serverName: string
+			source?: "global" | "project"
+			status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+			progressToken?: string | number
+			pollInterval?: number
+			message?: string
+			createdAt: number
+			updatedAt: number
+		}
+	> = new Map()
+
+	// Resource subscriptions tracking (MCP 2025-11-25)
+	// Maps serverName -> Set of subscribed resource URIs
+	private resourceSubscriptions: Map<string, Set<string>> = new Map()
+
 	constructor(provider: ClineProvider) {
 		this.providerRef = new WeakRef(provider)
 		this.watchMcpSettingsFile()
@@ -280,6 +360,8 @@ export class McpHub {
 			vscode.workspace.onDidChangeWorkspaceFolders(async () => {
 				await this.updateProjectMcpServers()
 				await this.watchProjectMcpFile()
+				// Notify all connected MCP servers that roots have changed (MCP 2025-11-25)
+				await this.notifyRootsListChanged()
 			}),
 		)
 	}
@@ -680,9 +762,523 @@ export class McpHub {
 					version: this.providerRef.deref()?.context.extension?.packageJSON?.version ?? "1.0.0",
 				},
 				{
-					capabilities: {},
+					capabilities: {
+						roots: {
+							listChanged: true,
+						},
+						// Sampling: servers can request LLM completions via sampling/createMessage
+						// Requires user approval via webview, then forwards to task's API
+						// tools: {} declares support for tool-augmented completions (MCP 2025-11-25)
+						sampling: {
+							tools: {},
+						},
+						// Elicitation: servers can request user input via elicitation/create
+						// Renders form in webview, returns user-submitted data
+						elicitation: {
+							form: {}, // Support form-based input
+						},
+					},
 				},
 			)
+
+			// Register handler for server-initiated roots/list requests
+			// This allows MCP servers to query the client for filesystem boundaries
+			client.setRequestHandler(ListRootsRequestSchema, async () => {
+				const workspaceFolders = vscode.workspace.workspaceFolders ?? []
+				return {
+					roots: workspaceFolders.map((folder) => ({
+						uri: folder.uri.toString(),
+						name: folder.name,
+					})),
+				}
+			})
+
+			// Register handler for server-initiated sampling/createMessage requests
+			// Per MCP spec, sampling allows servers to request LLM completions from the client
+			// This implements the human-in-the-loop approval workflow via webview
+			client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
+				// Get provider and current task
+				const provider = this.providerRef?.deref()
+				if (!provider) {
+					throw new McpError(ErrorCode.InternalError, "No active provider for sampling request")
+				}
+
+				const task = provider.getCurrentTask()
+				if (!task) {
+					throw new McpError(ErrorCode.InternalError, "No active task for sampling request")
+				}
+
+				// Build the sampling request data for the webview
+				// Handle MCP SDK message content which can be string or content object
+				const samplingRequest: McpSamplingRequest = {
+					messages: request.params.messages.map((msg: SamplingMessage) => {
+						const content = msg.content
+						// Content can be a string, a single content object, or an array
+						if (typeof content === "string") {
+							return { role: msg.role, content: { type: "text" as const, text: content } }
+						}
+						if (Array.isArray(content)) {
+							// Take the first text content from the array
+							const textContent = content.find((c) => c.type === "text")
+							const text = textContent && "text" in textContent ? textContent.text : ""
+							return { role: msg.role, content: { type: "text" as const, text } }
+						}
+						// Single content object
+						if (content.type === "text") {
+							return { role: msg.role, content: { type: "text" as const, text: content.text } }
+						}
+						if (content.type === "image") {
+							return {
+								role: msg.role,
+								content: { type: "image" as const, data: content.data, mimeType: content.mimeType },
+							}
+						}
+						// Fallback for unknown content types
+						return { role: msg.role, content: { type: "text" as const, text: "[Unknown content type]" } }
+					}),
+					modelPreferences: request.params.modelPreferences,
+					systemPrompt: request.params.systemPrompt,
+					includeContext: request.params.includeContext,
+					temperature: request.params.temperature,
+					maxTokens: request.params.maxTokens,
+					stopSequences: request.params.stopSequences,
+					metadata: request.params.metadata as Record<string, unknown> | undefined,
+					// Tool-augmented sampling (MCP 2025-11-25)
+					tools: request.params.tools?.map((tool: McpSdkTool) => ({
+						name: tool.name,
+						description: tool.description,
+						inputSchema: tool.inputSchema as {
+							type: "object"
+							properties?: Record<string, unknown>
+							required?: string[]
+						},
+					})),
+					toolChoice: request.params.toolChoice as { mode?: "auto" | "required" | "none" } | undefined,
+				}
+
+				const askData: ClineAskUseMcpServer = {
+					type: "mcp_sampling",
+					serverName: name, // 'name' is from connectToServer method parameter
+					samplingRequest,
+				}
+
+				// Ask user for approval via webview
+				const { response } = await task.ask("use_mcp_server", JSON.stringify(askData))
+
+				if (response === "noButtonClicked") {
+					throw new McpError(ErrorCode.InvalidRequest, "User declined sampling request")
+				}
+
+				// User approved - forward to LLM
+				try {
+					const api = task.api
+					if (!api) {
+						throw new McpError(ErrorCode.InternalError, "No API available for sampling")
+					}
+
+					// Convert MCP messages to Anthropic format
+					const anthropicMessages: Array<{ role: "user" | "assistant"; content: string }> =
+						samplingRequest.messages.map((msg: McpSamplingRequest["messages"][number]) => {
+							// Handle content that can be single object or array
+							const content = msg.content
+							if (Array.isArray(content)) {
+								// Extract text from array of content blocks
+								const textParts = content
+									.filter((c): c is { type: "text"; text: string } => c.type === "text")
+									.map((c) => c.text)
+								return {
+									role: msg.role as "user" | "assistant",
+									content: textParts.join("\n") || "[Non-text content]",
+								}
+							}
+							// Single content object
+							return {
+								role: msg.role as "user" | "assistant",
+								content: content.type === "text" ? content.text : "[Non-text content]",
+							}
+						})
+
+					// Build system prompt
+					const systemPrompt = samplingRequest.systemPrompt ?? ""
+
+					// Convert MCP tools to OpenAI format for the API
+					const openaiTools = samplingRequest.tools?.map((tool: McpSamplingTool) => ({
+						type: "function" as const,
+						function: {
+							name: tool.name,
+							description: tool.description,
+							parameters: tool.inputSchema,
+						},
+					}))
+
+					// Map MCP toolChoice to OpenAI format
+					const openaiToolChoice = samplingRequest.toolChoice?.mode as
+						| "none"
+						| "auto"
+						| "required"
+						| undefined
+
+					// Create the message stream
+					// Note: temperature/maxTokens from MCP request are not passed through
+					// as the API handler uses the task's configured settings
+					const stream = api.createMessage(
+						systemPrompt,
+						anthropicMessages as any, // Anthropic SDK types
+						{
+							taskId: task.taskId,
+							tools: openaiTools,
+							tool_choice: openaiToolChoice,
+						},
+					)
+
+					// Consume the stream and collect text
+					let responseText = ""
+					let stopReason: "endTurn" | "stopSequence" | "maxTokens" = "endTurn"
+
+					for await (const chunk of stream) {
+						if (chunk.type === "text") {
+							responseText += chunk.text
+						} else if (chunk.type === "error") {
+							throw new McpError(ErrorCode.InternalError, chunk.message)
+						}
+					}
+
+					// Check for stop sequences
+					if (samplingRequest.stopSequences?.length) {
+						for (const seq of samplingRequest.stopSequences) {
+							if (responseText.includes(seq)) {
+								responseText = responseText.split(seq)[0]
+								stopReason = "stopSequence"
+								break
+							}
+						}
+					}
+
+					return {
+						role: "assistant" as const,
+						content: {
+							type: "text" as const,
+							text: responseText,
+						},
+						model: api.getModel().id,
+						stopReason,
+					}
+				} catch (error) {
+					throw new McpError(
+						ErrorCode.InternalError,
+						`Failed to process sampling request: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
+			})
+
+			// Register handler for server-initiated elicitation/create requests
+			// Per MCP spec, elicitation allows servers to request user input via forms
+			// This implements the form UI workflow via webview
+			client.setRequestHandler(ElicitRequestSchema, async (request) => {
+				// Get provider and current task
+				const provider = this.providerRef?.deref()
+				if (!provider) {
+					return { action: "decline" as const }
+				}
+
+				const task = provider.getCurrentTask()
+				if (!task) {
+					return { action: "decline" as const }
+				}
+
+				// Elicitation can be form mode or URL mode - we only support form mode
+				const params = request.params
+				if ("url" in params) {
+					// URL mode - redirect user to external URL, not supported
+					return { action: "decline" as const }
+				}
+
+				// Build the elicitation request data for the webview (form mode)
+				const elicitationRequest: McpElicitationRequest = {
+					message: params.message,
+					requestedSchema: {
+						type: "object" as const,
+						properties: Object.fromEntries(
+							Object.entries(params.requestedSchema.properties).map(
+								([key, prop]: [string, PrimitiveSchemaDefinition]) => [
+									key,
+									{
+										type: prop.type as "string" | "number" | "boolean",
+										title: prop.title,
+										description: prop.description,
+										enum: "enum" in prop ? (prop.enum as string[]) : undefined,
+										default: prop.default,
+									},
+								],
+							),
+						),
+						required: params.requestedSchema.required,
+					},
+				}
+
+				const askData: ClineAskUseMcpServer = {
+					type: "mcp_elicitation",
+					serverName: name, // 'name' is from connectToServer method parameter
+					elicitationRequest,
+				}
+
+				// Ask user for input via webview form
+				const { response, text } = await task.ask("use_mcp_server", JSON.stringify(askData))
+
+				if (response === "noButtonClicked") {
+					return { action: "decline" as const }
+				}
+
+				// User submitted the form - parse the response
+				try {
+					const formData = text ? JSON.parse(text) : {}
+					return {
+						action: "accept" as const,
+						content: formData,
+					}
+				} catch {
+					return { action: "decline" as const }
+				}
+			})
+
+			// Register notification handler for progress updates (MCP 2025-11-25)
+			// Servers send notifications/progress to report progress on long-running operations
+			client.setNotificationHandler(ProgressNotificationSchema, async (notification) => {
+				const { progressToken, progress, total, message } = notification.params
+				const tokenData = this.activeProgressTokens.get(progressToken)
+
+				if (tokenData) {
+					// Validate monotonic progress (SHOULD per spec)
+					if (progress < tokenData.lastProgress) {
+						console.warn(
+							`[McpHub] Non-monotonic progress for token ${progressToken}: ${progress} < ${tokenData.lastProgress}`,
+						)
+					}
+					tokenData.lastProgress = progress
+
+					// Call the registered callback if present
+					if (tokenData.callback) {
+						tokenData.callback(progress, total, message)
+					}
+
+					// Forward to webview for UI updates
+					const provider = this.providerRef?.deref()
+					if (provider) {
+						await provider.postMessageToWebview({
+							type: "mcpProgress",
+							payload: {
+								serverName: tokenData.serverName,
+								progressToken,
+								progress,
+								total,
+								message,
+							},
+						})
+					}
+				}
+			})
+
+			// Register notification handler for cancellation (MCP 2025-11-25)
+			// Servers send notifications/cancelled to abort pending requests
+			client.setNotificationHandler(CancelledNotificationSchema, async (notification) => {
+				const { requestId, reason } = notification.params
+
+				// requestId is required per MCP spec, but SDK types may be loose
+				if (requestId === undefined) {
+					console.warn("[McpHub] Received cancellation without requestId")
+					return
+				}
+
+				const pendingRequest = this.pendingRequests.get(requestId)
+
+				if (pendingRequest) {
+					console.log(`[McpHub] Received cancellation for request ${requestId}: ${reason ?? "no reason"}`)
+					// Abort the pending operation
+					pendingRequest.controller.abort(reason)
+					// Clean up tracking
+					this.pendingRequests.delete(requestId)
+				} else {
+					// Per MCP spec: ignore cancellation for unknown/completed requests
+					console.debug(`[McpHub] Ignoring cancellation for unknown request ${requestId}`)
+				}
+			})
+
+			// Register notification handler for task status updates (MCP 2025-11-25)
+			// Servers send notifications/tasks/status to report task state changes
+			client.setNotificationHandler(TaskStatusNotificationSchema, async (notification) => {
+				const { taskId, status, statusMessage, pollInterval } = notification.params
+				const taskData = this.activeTasks.get(taskId)
+
+				if (taskData) {
+					taskData.status = status
+					taskData.message = statusMessage
+					if (pollInterval !== undefined) {
+						taskData.pollInterval = pollInterval
+					}
+					taskData.updatedAt = Date.now()
+
+					// Forward to webview for UI updates
+					const provider = this.providerRef?.deref()
+					if (provider) {
+						await provider.postMessageToWebview({
+							type: "mcpTaskStatus",
+							payload: {
+								serverName: taskData.serverName,
+								taskId,
+								status,
+								statusMessage,
+								pollInterval,
+							},
+						})
+					}
+
+					// Clean up completed/failed/cancelled tasks after notification
+					if (status === "completed" || status === "failed" || status === "cancelled") {
+						// Keep task data for result retrieval, but mark as terminal
+						// Cleanup will happen when result is retrieved or after TTL
+					}
+				} else {
+					console.debug(`[McpHub] Received status for unknown task ${taskId}`)
+				}
+			})
+
+			// Register notification handler for logging messages (MCP 2025-11-25)
+			// Servers send notifications/message to forward log messages to the client
+			client.setNotificationHandler(LoggingMessageNotificationSchema, async (notification) => {
+				const { level, logger, data } = notification.params
+
+				// Log to console based on level
+				const logMessage = `[MCP ${name}${logger ? ` - ${logger}` : ""}] ${typeof data === "string" ? data : JSON.stringify(data)}`
+				switch (level) {
+					case "debug":
+						console.debug(logMessage)
+						break
+					case "info":
+					case "notice":
+						console.log(logMessage)
+						break
+					case "warning":
+						console.warn(logMessage)
+						break
+					case "error":
+					case "critical":
+					case "alert":
+					case "emergency":
+						console.error(logMessage)
+						break
+					default:
+						console.log(logMessage)
+				}
+
+				// Forward to webview for display in UI
+				const provider = this.providerRef?.deref()
+				if (provider) {
+					await provider.postMessageToWebview({
+						type: "mcpLogMessage",
+						payload: {
+							serverName: name,
+							level,
+							logger,
+							data,
+							timestamp: Date.now(),
+						},
+					})
+				}
+
+				// Also add to error history if it's a warning or error
+				const connection = this.findConnection(name, source)
+				if (
+					connection &&
+					(level === "warning" ||
+						level === "error" ||
+						level === "critical" ||
+						level === "alert" ||
+						level === "emergency")
+				) {
+					this.appendErrorMessage(
+						connection,
+						typeof data === "string" ? data : JSON.stringify(data),
+						level === "warning" ? "warn" : "error",
+					)
+				}
+			})
+
+			// Register notification handler for resource list changes (MCP 2025-11-25)
+			// Servers send notifications/resources/list_changed when resources are added/removed
+			client.setNotificationHandler(ResourceListChangedNotificationSchema, async () => {
+				console.log(`[McpHub] Resource list changed for server ${name}`)
+				try {
+					const connection = this.findConnection(name, source)
+					if (connection && connection.type === "connected") {
+						connection.server.resources = await this.fetchResourcesList(name, source)
+						await this.notifyWebviewOfServerChanges()
+					}
+				} catch (error) {
+					console.error(`[McpHub] Error refreshing resources for ${name}:`, error)
+				}
+			})
+
+			// Register notification handler for tool list changes (MCP 2025-11-25)
+			// Servers send notifications/tools/list_changed when tools are added/removed
+			client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+				console.log(`[McpHub] Tool list changed for server ${name}`)
+				try {
+					const connection = this.findConnection(name, source)
+					if (connection && connection.type === "connected") {
+						connection.server.tools = await this.fetchToolsList(name, source)
+						await this.notifyWebviewOfServerChanges()
+					}
+				} catch (error) {
+					console.error(`[McpHub] Error refreshing tools for ${name}:`, error)
+				}
+			})
+
+			// Register notification handler for prompt list changes (MCP 2025-11-25)
+			// Servers send notifications/prompts/list_changed when prompts are added/removed
+			client.setNotificationHandler(PromptListChangedNotificationSchema, async () => {
+				console.log(`[McpHub] Prompt list changed for server ${name}`)
+				try {
+					const connection = this.findConnection(name, source)
+					if (connection && connection.type === "connected") {
+						connection.server.prompts = await this.fetchPromptsList(name, source)
+						await this.notifyWebviewOfServerChanges()
+					}
+				} catch (error) {
+					console.error(`[McpHub] Error refreshing prompts for ${name}:`, error)
+				}
+			})
+
+			// Register notification handler for resource updates (MCP 2025-11-25)
+			// Servers send notifications/resources/updated when a subscribed resource changes
+			client.setNotificationHandler(ResourceUpdatedNotificationSchema, async (notification) => {
+				const { uri } = notification.params
+				console.log(`[McpHub] Resource updated for server ${name}: ${uri}`)
+
+				try {
+					// Forward to webview for UI updates
+					const provider = this.providerRef?.deref()
+					if (provider) {
+						await provider.postMessageToWebview({
+							type: "mcpResourceUpdated",
+							payload: {
+								serverName: name,
+								uri,
+								timestamp: Date.now(),
+							},
+						})
+					}
+
+					// Optionally refresh the resource list
+					const connection = this.findConnection(name, source)
+					if (connection && connection.type === "connected") {
+						// Re-fetch resources to get updated metadata
+						connection.server.resources = await this.fetchResourcesList(name, source)
+						await this.notifyWebviewOfServerChanges()
+					}
+				} catch (error) {
+					console.error(`[McpHub] Error handling resource update for ${name}:`, error)
+				}
+			})
 
 			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
 
@@ -869,10 +1465,11 @@ export class McpHub {
 			connection.server.error = ""
 			connection.server.instructions = client.getInstructions()
 
-			// Initial fetch of tools and resources
+			// Initial fetch of tools, resources, and prompts
 			connection.server.tools = await this.fetchToolsList(name, source)
 			connection.server.resources = await this.fetchResourcesList(name, source)
 			connection.server.resourceTemplates = await this.fetchResourceTemplatesList(name, source)
+			connection.server.prompts = await this.fetchPromptsList(name, source)
 		} catch (error) {
 			// Update status with error
 			const connection = this.findConnection(name, source)
@@ -995,12 +1592,17 @@ export class McpHub {
 				// Continue with empty configs
 			}
 
-			// Mark tools as always allowed and enabled for prompt based on settings
-			const tools = (response?.tools || []).map((tool) => ({
-				...tool,
-				alwaysAllow: alwaysAllowConfig.includes(tool.name),
-				enabledForPrompt: !disabledToolsList.includes(tool.name),
-			}))
+			// Validate and mark tools as always allowed and enabled for prompt based on settings
+			const tools = (response?.tools || []).map((tool) => {
+				// Validate tool name against MCP spec and log warnings if non-compliant
+				validateMcpToolName(tool.name, serverName)
+
+				return {
+					...tool,
+					alwaysAllow: alwaysAllowConfig.includes(tool.name),
+					enabledForPrompt: !disabledToolsList.includes(tool.name),
+				}
+			})
 
 			return tools
 		} catch (error) {
@@ -1039,6 +1641,32 @@ export class McpHub {
 			return response?.resourceTemplates || []
 		} catch (error) {
 			// console.error(`Failed to fetch resource templates for ${serverName}:`, error)
+			return []
+		}
+	}
+
+	/**
+	 * Fetch the list of prompts from an MCP server
+	 * @param serverName The name of the server to fetch prompts from
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Array of prompts offered by the server
+	 */
+	private async fetchPromptsList(serverName: string, source?: "global" | "project"): Promise<McpPrompt[]> {
+		try {
+			const connection = this.findConnection(serverName, source)
+			if (!connection || connection.type !== "connected") {
+				return []
+			}
+			const response = await connection.client.request({ method: "prompts/list" }, ListPromptsResultSchema)
+			return (
+				response?.prompts?.map((prompt) => ({
+					name: prompt.name,
+					description: prompt.description,
+					arguments: prompt.arguments,
+				})) || []
+			)
+		} catch (error) {
+			// Server may not support prompts capability, which is fine
 			return []
 		}
 	}
@@ -1444,6 +2072,7 @@ export class McpHub {
 							serverName,
 							serverSource,
 						)
+						connection.server.prompts = await this.fetchPromptsList(serverName, serverSource)
 					}
 				} catch (error) {
 					console.error(`Failed to refresh capabilities for ${serverName}:`, error)
@@ -1699,6 +2328,120 @@ export class McpHub {
 		)
 	}
 
+	/**
+	 * Get a specific prompt from an MCP server with optional arguments
+	 * @param serverName The name of the server to get the prompt from
+	 * @param promptName The name of the prompt to retrieve
+	 * @param promptArguments Optional arguments to pass to the prompt
+	 * @param source Optional source to filter by (global or project)
+	 * @returns The prompt response containing messages
+	 */
+	async getPrompt(
+		serverName: string,
+		promptName: string,
+		promptArguments?: Record<string, string>,
+		source?: "global" | "project",
+	): Promise<McpPromptResponse> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+		const response = await connection.client.request(
+			{
+				method: "prompts/get",
+				params: {
+					name: promptName,
+					arguments: promptArguments,
+				},
+			},
+			GetPromptResultSchema,
+		)
+		return {
+			description: response.description,
+			messages: response.messages.map((msg) => ({
+				role: msg.role,
+				content: msg.content as McpPromptResponse["messages"][0]["content"],
+			})),
+		}
+	}
+
+	/**
+	 * Set the logging level for an MCP server
+	 * This controls what level of log messages the server will send via notifications/message
+	 * @param serverName The name of the server
+	 * @param level The logging level: "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency"
+	 * @param source Optional source to filter by (global or project)
+	 */
+	async setLoggingLevel(
+		serverName: string,
+		level: "debug" | "info" | "notice" | "warning" | "error" | "critical" | "alert" | "emergency",
+		source?: "global" | "project",
+	): Promise<void> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+		// Per MCP spec, logging/setLevel sets the minimum level of logs the server should send
+		await connection.client.request(
+			{
+				method: "logging/setLevel",
+				params: {
+					level,
+				},
+			},
+			z.object({}), // Empty result schema - logging/setLevel returns empty object on success
+		)
+	}
+
+	/**
+	 * Request autocompletion suggestions for a prompt or resource template argument
+	 * @param serverName The name of the server
+	 * @param ref Reference to the prompt or resource template
+	 * @param argument The argument being completed (name and current value)
+	 * @param context Optional context with already-resolved argument values
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Completion suggestions with values array, optional total count, and hasMore flag
+	 */
+	async complete(
+		serverName: string,
+		ref: { type: "ref/prompt"; name: string } | { type: "ref/resource"; uri: string },
+		argument: { name: string; value: string },
+		context?: { arguments?: Record<string, string> },
+		source?: "global" | "project",
+	): Promise<{ completion: { values: string[]; total?: number; hasMore?: boolean } }> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+		const response = await connection.client.request(
+			{
+				method: "completion/complete",
+				params: {
+					ref,
+					argument,
+					...(context && { context }),
+				},
+			},
+			CompleteResultSchema,
+		)
+		return {
+			completion: {
+				values: response.completion.values,
+				total: response.completion.total,
+				hasMore: response.completion.hasMore,
+			},
+		}
+	}
+
 	async callTool(
 		serverName: string,
 		toolName: string,
@@ -1725,7 +2468,8 @@ export class McpHub {
 			timeout = 60 * 1000
 		}
 
-		return await connection.client.request(
+		// Cast to McpToolCallResponse - SDK schema is a superset with additional fields like resource_link
+		return (await connection.client.request(
 			{
 				method: "tools/call",
 				params: {
@@ -1737,7 +2481,7 @@ export class McpHub {
 			{
 				timeout,
 			},
-		)
+		)) as McpToolCallResponse
 	}
 
 	/**
@@ -1918,6 +2662,688 @@ export class McpHub {
 		}
 	}
 
+	// ============================================================================
+	// Progress Tracking (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Generate a unique progress token for tracking long-running operations.
+	 * Call this before making a request that may report progress.
+	 */
+	generateProgressToken(
+		serverName: string,
+		callback?: (progress: number, total?: number, message?: string) => void,
+	): string {
+		const token = crypto.randomUUID()
+		this.activeProgressTokens.set(token, {
+			serverName,
+			callback,
+			lastProgress: 0,
+		})
+		return token
+	}
+
+	/**
+	 * Clean up a progress token after the operation completes.
+	 * Should be called when the request finishes (success or failure).
+	 */
+	clearProgressToken(token: string | number): void {
+		this.activeProgressTokens.delete(token)
+	}
+
+	// ============================================================================
+	// Request Cancellation (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Register a pending request for cancellation tracking.
+	 * Returns an AbortController whose signal can be used by async operations.
+	 */
+	registerCancellableRequest(serverName: string, requestId: string | number): AbortController {
+		const controller = new AbortController()
+		this.pendingRequests.set(requestId, { serverName, controller })
+		return controller
+	}
+
+	/**
+	 * Unregister a request when it completes (success or failure).
+	 * Important: Call this to prevent memory leaks.
+	 */
+	unregisterRequest(requestId: string | number): void {
+		this.pendingRequests.delete(requestId)
+	}
+
+	/**
+	 * Send a cancellation notification to a server.
+	 * Per MCP spec, this is fire-and-forget (no response expected).
+	 */
+	async sendCancellation(
+		serverName: string,
+		requestId: string | number,
+		reason?: string,
+		source?: "global" | "project",
+	): Promise<void> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection?.client) {
+			console.warn(`[McpHub] Cannot cancel request ${requestId}: server ${serverName} not connected`)
+			return
+		}
+
+		try {
+			// Send notifications/cancelled per MCP spec
+			await connection.client.notification({
+				method: "notifications/cancelled",
+				params: {
+					requestId,
+					reason,
+				},
+			})
+		} catch (error) {
+			// Fire-and-forget per spec, but log for debugging
+			console.debug(`[McpHub] Failed to send cancellation for ${requestId}:`, error)
+		}
+	}
+
+	// ============================================================================
+	// Ping (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Send a ping request to verify server connectivity.
+	 * Per MCP spec, this is a simple health check that returns an empty object.
+	 * @param serverName The name of the server to ping
+	 * @param source Optional source to filter by (global or project)
+	 * @throws Error if the server is not connected or doesn't respond
+	 */
+	async ping(serverName: string, source?: "global" | "project"): Promise<void> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+		// Per MCP spec, ping returns an empty object
+		await connection.client.request({ method: "ping" }, z.object({}))
+	}
+
+	// ============================================================================
+	// URI Template Handling (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Check if a URI string is a template (contains template expressions like {foo}).
+	 * @param uri The URI string to check
+	 * @returns true if the URI contains template expressions
+	 */
+	isUriTemplate(uri: string): boolean {
+		return UriTemplate.isTemplate(uri)
+	}
+
+	/**
+	 * Get the variable names from a URI template.
+	 * @param uriTemplate The URI template string
+	 * @returns Array of variable names in the template
+	 */
+	getUriTemplateVariables(uriTemplate: string): string[] {
+		const template = new UriTemplate(uriTemplate)
+		return template.variableNames
+	}
+
+	/**
+	 * Expand a URI template with the given variables.
+	 * Per RFC 6570, this handles various expansion operators like {+path}, {?query}, etc.
+	 * @param uriTemplate The URI template string
+	 * @param variables The variables to expand the template with
+	 * @returns The expanded URI string
+	 */
+	expandUriTemplate(uriTemplate: string, variables: Record<string, string | string[]>): string {
+		const template = new UriTemplate(uriTemplate)
+		return template.expand(variables)
+	}
+
+	/**
+	 * Match a URI against a template and extract the variable values.
+	 * @param uriTemplate The URI template string
+	 * @param uri The URI to match against the template
+	 * @returns The extracted variables, or null if the URI doesn't match the template
+	 */
+	matchUriTemplate(uriTemplate: string, uri: string): Record<string, string | string[]> | null {
+		const template = new UriTemplate(uriTemplate)
+		return template.match(uri)
+	}
+
+	/**
+	 * Read a resource using a template and variables.
+	 * This expands the template with the given variables and reads the resulting URI.
+	 * @param serverName The name of the server
+	 * @param uriTemplate The URI template string
+	 * @param variables The variables to expand the template with
+	 * @param source Optional source to filter by (global or project)
+	 * @returns The resource response
+	 */
+	async readResourceFromTemplate(
+		serverName: string,
+		uriTemplate: string,
+		variables: Record<string, string | string[]>,
+		source?: "global" | "project",
+	): Promise<McpResourceResponse> {
+		const expandedUri = this.expandUriTemplate(uriTemplate, variables)
+		return this.readResource(serverName, expandedUri, source)
+	}
+
+	// ============================================================================
+	// Display Name Handling (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Get the display name for an MCP object (tool, resource, prompt, etc.).
+	 * Per MCP spec, the precedence is:
+	 * - For tools: title → annotations.title → name
+	 * - For other objects: title → name
+	 *
+	 * @param metadata Object with name and optional title/annotations
+	 * @returns The appropriate display name
+	 */
+	getDisplayName(metadata: { name: string; title?: string; annotations?: { title?: string } }): string {
+		return sdkGetDisplayName(metadata as any)
+	}
+
+	/**
+	 * Get display names for all tools from a server.
+	 * @param serverName The name of the server
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Map of tool name to display name
+	 */
+	getToolDisplayNames(serverName: string, source?: "global" | "project"): Map<string, string> {
+		const connection = this.findConnection(serverName, source)
+		const displayNames = new Map<string, string>()
+
+		if (connection && connection.type === "connected" && connection.server.tools) {
+			for (const tool of connection.server.tools) {
+				displayNames.set(tool.name, this.getDisplayName(tool))
+			}
+		}
+
+		return displayNames
+	}
+
+	/**
+	 * Get display names for all resources from a server.
+	 * @param serverName The name of the server
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Map of resource URI to display name
+	 */
+	getResourceDisplayNames(serverName: string, source?: "global" | "project"): Map<string, string> {
+		const connection = this.findConnection(serverName, source)
+		const displayNames = new Map<string, string>()
+
+		if (connection && connection.type === "connected" && connection.server.resources) {
+			for (const resource of connection.server.resources) {
+				displayNames.set(resource.uri, this.getDisplayName(resource))
+			}
+		}
+
+		return displayNames
+	}
+
+	/**
+	 * Get display names for all prompts from a server.
+	 * @param serverName The name of the server
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Map of prompt name to display name
+	 */
+	getPromptDisplayNames(serverName: string, source?: "global" | "project"): Map<string, string> {
+		const connection = this.findConnection(serverName, source)
+		const displayNames = new Map<string, string>()
+
+		if (connection && connection.type === "connected" && connection.server.prompts) {
+			for (const prompt of connection.server.prompts) {
+				displayNames.set(prompt.name, this.getDisplayName(prompt))
+			}
+		}
+
+		return displayNames
+	}
+
+	// ============================================================================
+	// Resource Subscriptions (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Subscribe to updates for a specific resource.
+	 * When the resource changes, the server will send notifications/resources/updated.
+	 * @param serverName The name of the server
+	 * @param uri The URI of the resource to subscribe to
+	 * @param source Optional source to filter by (global or project)
+	 */
+	async subscribeToResource(serverName: string, uri: string, source?: "global" | "project"): Promise<void> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+
+		// Check if server supports subscriptions
+		const serverCapabilities = connection.client.getServerCapabilities()
+		if (!serverCapabilities?.resources?.subscribe) {
+			throw new Error(`Server "${serverName}" does not support resource subscriptions`)
+		}
+
+		// Send subscribe request
+		await connection.client.request(
+			{
+				method: "resources/subscribe",
+				params: { uri },
+			},
+			z.object({}), // Empty result on success
+		)
+
+		// Track the subscription locally
+		const serverKey = `${serverName}:${source ?? "global"}`
+		if (!this.resourceSubscriptions.has(serverKey)) {
+			this.resourceSubscriptions.set(serverKey, new Set())
+		}
+		this.resourceSubscriptions.get(serverKey)!.add(uri)
+
+		console.log(`[McpHub] Subscribed to resource ${uri} on server ${serverName}`)
+	}
+
+	/**
+	 * Unsubscribe from updates for a specific resource.
+	 * @param serverName The name of the server
+	 * @param uri The URI of the resource to unsubscribe from
+	 * @param source Optional source to filter by (global or project)
+	 */
+	async unsubscribeFromResource(serverName: string, uri: string, source?: "global" | "project"): Promise<void> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") {
+			throw new Error(`No connection found for server: ${serverName}${source ? ` with source ${source}` : ""}`)
+		}
+		if (connection.server.disabled) {
+			throw new Error(`Server "${serverName}" is disabled`)
+		}
+
+		// Send unsubscribe request
+		await connection.client.request(
+			{
+				method: "resources/unsubscribe",
+				params: { uri },
+			},
+			z.object({}), // Empty result on success
+		)
+
+		// Remove from local tracking
+		const serverKey = `${serverName}:${source ?? "global"}`
+		const subscriptions = this.resourceSubscriptions.get(serverKey)
+		if (subscriptions) {
+			subscriptions.delete(uri)
+			if (subscriptions.size === 0) {
+				this.resourceSubscriptions.delete(serverKey)
+			}
+		}
+
+		console.log(`[McpHub] Unsubscribed from resource ${uri} on server ${serverName}`)
+	}
+
+	/**
+	 * Get the list of currently subscribed resources for a server.
+	 * @param serverName The name of the server
+	 * @param source Optional source to filter by (global or project)
+	 * @returns Array of subscribed resource URIs
+	 */
+	getSubscribedResources(serverName: string, source?: "global" | "project"): string[] {
+		const serverKey = `${serverName}:${source ?? "global"}`
+		const subscriptions = this.resourceSubscriptions.get(serverKey)
+		return subscriptions ? Array.from(subscriptions) : []
+	}
+
+	// ============================================================================
+	// Roots List Changed (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Notify all connected servers that the workspace roots have changed.
+	 * Per MCP spec, clients SHOULD send this notification when the list of roots changes.
+	 * This allows servers to refresh their view of available filesystem boundaries.
+	 */
+	async notifyRootsListChanged(): Promise<void> {
+		const notificationPromises: Promise<void>[] = []
+
+		for (const connection of this.connections) {
+			if (connection.type === "connected" && !connection.server.disabled) {
+				// Per MCP spec, roots/list_changed is broadcast to all connected servers.
+				// Servers that need filesystem boundaries will call roots/list; others ignore this.
+				// Note: roots is a CLIENT capability, not a server capability to filter on.
+				notificationPromises.push(
+					connection.client
+						.notification({
+							method: "notifications/roots/list_changed",
+						})
+						.catch((error) => {
+							// Fire-and-forget per spec, but log for debugging
+							console.debug(
+								`[McpHub] Failed to send roots/list_changed to ${connection.server.name}:`,
+								error,
+							)
+						}),
+				)
+			}
+		}
+
+		// Send all notifications in parallel
+		await Promise.allSettled(notificationPromises)
+	}
+
+	// ============================================================================
+	// Tasks (MCP 2025-11-25)
+	// ============================================================================
+
+	/**
+	 * Call a tool with task augmentation for long-running operations.
+	 * Returns a CreateTaskResult if the server supports tasks and returns one,
+	 * otherwise returns the normal tool result.
+	 */
+	async callToolAsTask(
+		serverName: string,
+		toolName: string,
+		args: Record<string, unknown>,
+		options?: {
+			source?: "global" | "project"
+			ttl?: number
+			progressCallback?: (progress: number, total?: number, message?: string) => void
+		},
+	): Promise<
+		{ type: "task"; taskId: string; pollInterval?: number } | { type: "result"; result: McpToolCallResponse }
+	> {
+		const connection = this.findConnection(serverName, options?.source)
+		if (!connection?.client) {
+			throw new McpError(ErrorCode.InternalError, `Server ${serverName} not connected`)
+		}
+
+		// Check if server supports tasks
+		const serverCapabilities = connection.client.getServerCapabilities()
+		if (!serverCapabilities?.tasks) {
+			// Server doesn't support tasks, fall back to normal call
+			const result = await connection.client.request(
+				{ method: "tools/call", params: { name: toolName, arguments: args } },
+				CallToolResultSchema,
+			)
+			// Cast to McpToolCallResponse - SDK schema is a superset with additional fields
+			return { type: "result", result: result as McpToolCallResponse }
+		}
+
+		// Generate progress token for tracking
+		const progressToken = options?.progressCallback
+			? this.generateProgressToken(serverName, options.progressCallback)
+			: undefined
+
+		try {
+			// Make task-augmented request
+			const result = await connection.client.callTool({
+				name: toolName,
+				arguments: args,
+				_meta: {
+					...(progressToken && { progressToken }),
+				},
+				// Task augmentation params per MCP spec
+				task: {
+					ttl: options?.ttl,
+				},
+			} as any) // SDK types may not include task param yet
+
+			// Check if result is a CreateTaskResult
+			const createTaskResult = CreateTaskResultSchema.safeParse(result)
+			if (createTaskResult.success && createTaskResult.data.task) {
+				const task = createTaskResult.data.task
+				// Track the task
+				this.activeTasks.set(task.taskId, {
+					serverName,
+					source: options?.source,
+					status: task.status,
+					progressToken,
+					pollInterval: task.pollInterval,
+					message: task.statusMessage,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+				})
+				return {
+					type: "task",
+					taskId: task.taskId,
+					pollInterval: task.pollInterval,
+				}
+			}
+
+			// Normal result - cast to McpToolCallResponse for backward compatibility
+			if (progressToken) {
+				this.clearProgressToken(progressToken)
+			}
+			return { type: "result", result: result as McpToolCallResponse }
+		} catch (error) {
+			if (progressToken) {
+				this.clearProgressToken(progressToken)
+			}
+			throw error
+		}
+	}
+
+	/**
+	 * Get the current status of a task.
+	 * Returns the task object with current status.
+	 */
+	async getTask(
+		serverName: string,
+		taskId: string,
+		source?: "global" | "project",
+	): Promise<{
+		task?: {
+			taskId: string
+			status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+			statusMessage?: string
+			pollInterval?: number
+		}
+	}> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection?.client) {
+			throw new McpError(ErrorCode.InternalError, `Server ${serverName} not connected`)
+		}
+
+		const result = (await connection.client.request(
+			{ method: "tasks/get", params: { taskId } },
+			GetTaskResultSchema,
+		)) as {
+			task?: {
+				taskId: string
+				status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+				statusMessage?: string
+				pollInterval?: number
+			}
+		}
+
+		// Update local tracking
+		const taskData = this.activeTasks.get(taskId)
+		if (taskData && result.task) {
+			taskData.status = result.task.status
+			taskData.message = result.task.statusMessage
+			taskData.pollInterval = result.task.pollInterval
+			taskData.updatedAt = Date.now()
+		}
+
+		return result
+	}
+
+	/**
+	 * Get the result of a completed task.
+	 * Only valid for tasks in completed status.
+	 */
+	async getTaskResult(
+		serverName: string,
+		taskId: string,
+		source?: "global" | "project",
+	): Promise<McpToolCallResponse> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection?.client) {
+			throw new McpError(ErrorCode.InternalError, `Server ${serverName} not connected`)
+		}
+
+		// Use tasks/result to get the actual result
+		const result = await connection.client.request(
+			{ method: "tasks/result", params: { taskId } },
+			CallToolResultSchema, // tasks/result returns the same format as tools/call
+		)
+
+		// Clean up task tracking after result retrieval
+		const taskData = this.activeTasks.get(taskId)
+		if (taskData?.progressToken) {
+			this.clearProgressToken(taskData.progressToken)
+		}
+		this.activeTasks.delete(taskId)
+
+		// Cast to McpToolCallResponse - SDK schema is a superset with additional fields
+		return result as McpToolCallResponse
+	}
+
+	/**
+	 * Cancel a running task.
+	 * Only valid for tasks not in terminal state (completed/failed/cancelled).
+	 */
+	async cancelTask(
+		serverName: string,
+		taskId: string,
+		source?: "global" | "project",
+	): Promise<{
+		task?: {
+			taskId: string
+			status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+			statusMessage?: string
+			pollInterval?: number
+		}
+	}> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection?.client) {
+			throw new McpError(ErrorCode.InternalError, `Server ${serverName} not connected`)
+		}
+
+		const result = (await connection.client.request(
+			{ method: "tasks/cancel", params: { taskId } },
+			CancelTaskResultSchema,
+		)) as {
+			task?: {
+				taskId: string
+				status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+				statusMessage?: string
+				pollInterval?: number
+			}
+		}
+
+		// Update local tracking
+		const taskData = this.activeTasks.get(taskId)
+		if (taskData) {
+			taskData.status = "cancelled"
+			taskData.updatedAt = Date.now()
+		}
+
+		return result
+	}
+
+	/**
+	 * List all tasks for a server with optional pagination.
+	 */
+	async listTasks(
+		serverName: string,
+		options?: {
+			source?: "global" | "project"
+			cursor?: string
+		},
+	): Promise<{
+		tasks: Array<{
+			taskId: string
+			status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+			statusMessage?: string
+			pollInterval?: number
+		}>
+		nextCursor?: string
+	}> {
+		const connection = this.findConnection(serverName, options?.source)
+		if (!connection?.client) {
+			throw new McpError(ErrorCode.InternalError, `Server ${serverName} not connected`)
+		}
+
+		return (await connection.client.request(
+			{ method: "tasks/list", params: { cursor: options?.cursor } },
+			ListTasksResultSchema,
+		)) as {
+			tasks: Array<{
+				taskId: string
+				status: "working" | "input_required" | "completed" | "failed" | "cancelled"
+				statusMessage?: string
+				pollInterval?: number
+			}>
+			nextCursor?: string
+		}
+	}
+
+	/**
+	 * Poll a task until it reaches a terminal state or timeout.
+	 * Respects the server's pollInterval recommendation.
+	 */
+	async pollTaskUntilComplete(
+		serverName: string,
+		taskId: string,
+		options?: {
+			source?: "global" | "project"
+			timeoutMs?: number
+			onStatusChange?: (status: string, message?: string) => void
+		},
+	): Promise<McpToolCallResponse> {
+		const startTime = Date.now()
+		const timeoutMs = options?.timeoutMs ?? 300000 // Default 5 minute timeout
+
+		while (true) {
+			// Check timeout
+			if (Date.now() - startTime > timeoutMs) {
+				throw new McpError(ErrorCode.InternalError, `Task ${taskId} timed out after ${timeoutMs}ms`)
+			}
+
+			// Get current status
+			const taskResult = await this.getTask(serverName, taskId, options?.source)
+			const task = taskResult.task
+
+			if (!task) {
+				throw new McpError(ErrorCode.InternalError, `Task ${taskId} not found`)
+			}
+
+			// Notify status change
+			if (options?.onStatusChange) {
+				options.onStatusChange(task.status, task.statusMessage)
+			}
+
+			// Check for terminal states
+			if (task.status === "completed") {
+				return await this.getTaskResult(serverName, taskId, options?.source)
+			}
+
+			if (task.status === "failed") {
+				throw new McpError(
+					ErrorCode.InternalError,
+					`Task ${taskId} failed: ${task.statusMessage ?? "unknown error"}`,
+				)
+			}
+
+			if (task.status === "cancelled") {
+				throw new McpError(ErrorCode.InternalError, `Task ${taskId} was cancelled`)
+			}
+
+			// TODO: Handle input_required state - would need UI integration
+
+			// Wait before polling again (respect server's pollInterval)
+			const pollInterval = task.pollInterval ?? 1000
+			await delay(pollInterval)
+		}
+	}
+
 	async dispose(): Promise<void> {
 		// Prevent multiple disposals
 		if (this.isDisposed) {
@@ -1925,6 +3351,12 @@ export class McpHub {
 		}
 
 		this.isDisposed = true
+
+		// Clear progress tokens, pending requests, tasks, and subscriptions
+		this.activeProgressTokens.clear()
+		this.pendingRequests.clear()
+		this.activeTasks.clear()
+		this.resourceSubscriptions.clear()
 
 		// Clear all debounce timers
 		for (const timer of this.configChangeDebounceTimers.values()) {

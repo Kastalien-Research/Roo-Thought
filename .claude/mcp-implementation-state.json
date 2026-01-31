@@ -1,0 +1,403 @@
+{
+	"last_updated": "2026-01-17T12:30:00Z",
+	"current_checkpoint": "5.0.0",
+	"status": "Progress, Cancellation, and Tasks features planned - next major milestones",
+	"design_document": ".claude/mcp-sampling-elicitation-design.md",
+	"todo_list": [
+		{
+			"primitive": "progress (notifications/progress)",
+			"type": "bidirectional",
+			"priority": "high",
+			"description": "Progress tracking for long-running operations",
+			"spec_reference": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_progress.md",
+			"sub_tasks": [
+				{
+					"id": "progress-1",
+					"name": "Support sending progressToken in requests",
+					"status": "pending",
+					"details": "When calling tools/resources, optionally include _meta.progressToken (string or integer, must be unique)"
+				},
+				{
+					"id": "progress-2",
+					"name": "Handle notifications/progress from servers",
+					"status": "pending",
+					"details": "Register notification handler to receive progress updates (progressToken, progress, total?, message?)"
+				},
+				{
+					"id": "progress-3",
+					"name": "Track active progress tokens",
+					"status": "pending",
+					"details": "Maintain map of active progressTokens to their associated requests"
+				},
+				{
+					"id": "progress-4",
+					"name": "Send notifications/progress for server requests",
+					"status": "pending",
+					"details": "When handling sampling/elicitation, send progress updates if progressToken provided"
+				},
+				{
+					"id": "progress-5",
+					"name": "UI: Display progress indicators",
+					"status": "pending",
+					"details": "Show progress bar/spinner in chat UI when progress notifications received"
+				}
+			],
+			"notes": [
+				"progress value MUST increase with each notification",
+				"progress and total MAY be floating point",
+				"message SHOULD provide human-readable status",
+				"For task-augmented requests, progressToken remains valid throughout task lifetime"
+			]
+		},
+		{
+			"primitive": "cancellation (notifications/cancelled)",
+			"type": "bidirectional",
+			"priority": "high",
+			"description": "Cancel in-progress requests via notification",
+			"spec_reference": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_cancellation.md",
+			"sub_tasks": [
+				{
+					"id": "cancel-1",
+					"name": "Send notifications/cancelled for outgoing requests",
+					"status": "pending",
+					"details": "Add cancelRequest method that sends notification with requestId and optional reason"
+				},
+				{
+					"id": "cancel-2",
+					"name": "Handle notifications/cancelled from servers",
+					"status": "pending",
+					"details": "Register handler to abort pending requests when server sends cancellation"
+				},
+				{
+					"id": "cancel-3",
+					"name": "Track in-progress requests with AbortController",
+					"status": "pending",
+					"details": "Maintain map of requestId -> AbortController for cancellable operations"
+				},
+				{
+					"id": "cancel-4",
+					"name": "Handle cancellation for sampling/elicitation",
+					"status": "pending",
+					"details": "When server cancels a sampling/elicitation request, abort the UI flow"
+				},
+				{
+					"id": "cancel-5",
+					"name": "UI: Cancel button for long-running operations",
+					"status": "pending",
+					"details": "Add cancel button in chat UI that triggers notifications/cancelled"
+				}
+			],
+			"notes": [
+				"MUST NOT cancel initialize request",
+				"For task-augmented requests, use tasks/cancel instead of notifications/cancelled",
+				"Receivers SHOULD stop processing and free resources",
+				"Receivers MAY ignore if request unknown or already completed",
+				"Handle race conditions gracefully (cancellation may arrive after completion)"
+			]
+		},
+		{
+			"primitive": "tasks (client-side support)",
+			"type": "client_to_server",
+			"priority": "high",
+			"description": "Support task-augmented tools/call requests to servers",
+			"spec_reference": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_tasks.md",
+			"sub_tasks": [
+				{
+					"id": "tasks-client-1",
+					"name": "Declare tasks capability in client initialization",
+					"status": "pending",
+					"details": "Add tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } to client capabilities"
+				},
+				{
+					"id": "tasks-client-2",
+					"name": "Modify callTool to support task augmentation",
+					"status": "pending",
+					"details": "Add optional task parameter to callTool method, handle CreateTaskResult response"
+				},
+				{
+					"id": "tasks-client-3",
+					"name": "Implement tasks/get polling",
+					"status": "pending",
+					"details": "Add getTask method, respect pollInterval, poll until terminal status"
+				},
+				{
+					"id": "tasks-client-4",
+					"name": "Implement tasks/result retrieval",
+					"status": "pending",
+					"details": "Add getTaskResult method, blocks until terminal status, returns actual tool result"
+				},
+				{
+					"id": "tasks-client-5",
+					"name": "Implement tasks/list",
+					"status": "pending",
+					"details": "Add listTasks method with cursor-based pagination"
+				},
+				{
+					"id": "tasks-client-6",
+					"name": "Implement tasks/cancel",
+					"status": "pending",
+					"details": "Add cancelTask method"
+				},
+				{
+					"id": "tasks-client-7",
+					"name": "Handle notifications/tasks/status",
+					"status": "pending",
+					"details": "Register notification handler for task status updates"
+				}
+			]
+		},
+		{
+			"primitive": "tasks (receiver-side support)",
+			"type": "server_to_client",
+			"priority": "medium",
+			"description": "Support task-augmented sampling/elicitation requests FROM servers",
+			"sub_tasks": [
+				{
+					"id": "tasks-receiver-1",
+					"name": "Declare task-augmented request capabilities",
+					"status": "pending",
+					"details": "Add tasks.requests.sampling.createMessage and tasks.requests.elicitation.create to client capabilities"
+				},
+				{
+					"id": "tasks-receiver-2",
+					"name": "Implement task state machine",
+					"status": "pending",
+					"details": "Create TaskManager class to track task lifecycle (working → input_required → completed/failed/cancelled)"
+				},
+				{
+					"id": "tasks-receiver-3",
+					"name": "Modify sampling handler for task augmentation",
+					"status": "pending",
+					"details": "When request includes task param, return CreateTaskResult immediately, process async"
+				},
+				{
+					"id": "tasks-receiver-4",
+					"name": "Modify elicitation handler for task augmentation",
+					"status": "pending",
+					"details": "When request includes task param, return CreateTaskResult immediately, process async"
+				},
+				{
+					"id": "tasks-receiver-5",
+					"name": "Handle tasks/get from server",
+					"status": "pending",
+					"details": "Register request handler for servers polling task status"
+				},
+				{
+					"id": "tasks-receiver-6",
+					"name": "Handle tasks/result from server",
+					"status": "pending",
+					"details": "Register request handler for servers retrieving task results"
+				},
+				{
+					"id": "tasks-receiver-7",
+					"name": "Handle tasks/list from server",
+					"status": "pending",
+					"details": "Register request handler for servers listing tasks"
+				},
+				{
+					"id": "tasks-receiver-8",
+					"name": "Handle tasks/cancel from server",
+					"status": "pending",
+					"details": "Register request handler for servers cancelling tasks"
+				},
+				{
+					"id": "tasks-receiver-9",
+					"name": "Send notifications/tasks/status",
+					"status": "pending",
+					"details": "Send status notifications when task state changes"
+				}
+			]
+		},
+		{
+			"primitive": "tasks (UI support)",
+			"type": "ui",
+			"priority": "medium",
+			"description": "UI components for task management",
+			"sub_tasks": [
+				{
+					"id": "tasks-ui-1",
+					"name": "Task status indicator component",
+					"status": "pending",
+					"details": "Show task progress in chat UI (working, input_required, completed, failed, cancelled)"
+				},
+				{
+					"id": "tasks-ui-2",
+					"name": "Active tasks panel",
+					"status": "pending",
+					"details": "Optional: Show list of active tasks with ability to cancel"
+				}
+			]
+		}
+	],
+	"completed": [
+		{
+			"primitive": "roots/list",
+			"type": "server_to_client",
+			"implementation": "Full - returns vscode.workspace.workspaceFolders",
+			"capability_declared": "roots: { listChanged: true }"
+		},
+		{
+			"primitive": "prompts/list",
+			"type": "client_to_server",
+			"implementation": "Full - fetchPromptsList method, prompts stored in McpServer"
+		},
+		{
+			"primitive": "prompts/get",
+			"type": "client_to_server",
+			"implementation": "Full - getPrompt method with arguments support"
+		},
+		{
+			"primitive": "logging/setLevel",
+			"type": "client_to_server",
+			"implementation": "Full - setLoggingLevel method"
+		},
+		{
+			"primitive": "completion/complete",
+			"type": "client_to_server",
+			"implementation": "Full - complete method for prompt/resource argument autocompletion"
+		},
+		{
+			"primitive": "sampling/createMessage",
+			"type": "server_to_client",
+			"implementation": "UI integration complete - handler uses task.ask(), webview shows approval UI",
+			"capability_declared": "sampling: {}",
+			"notes": [
+				"Handler receives sampling requests and displays approval UI",
+				"Returns placeholder response on approval",
+				"Full LLM forwarding would require streaming API orchestration",
+				"Human-in-the-loop approval pattern implemented"
+			]
+		},
+		{
+			"primitive": "elicitation/create",
+			"type": "server_to_client",
+			"implementation": "UI integration complete - handler uses task.ask(), webview shows form UI",
+			"capability_declared": "elicitation: { form: {} }",
+			"notes": [
+				"Handler receives elicitation requests and displays form UI",
+				"Form values returned to server on submit",
+				"Supports string, number, boolean, and enum field types",
+				"URL mode not supported (returns decline)"
+			]
+		}
+	],
+	"in_progress": null,
+	"blocked_primitives": [],
+	"global_blocked_paths": {},
+	"files_modified": [
+		"src/services/mcp/McpHub.ts",
+		"packages/types/src/mcp.ts",
+		"packages/types/src/vscode-extension-host.ts",
+		"webview-ui/src/components/chat/ChatRow.tsx",
+		"webview-ui/src/components/chat/McpSamplingApproval.tsx",
+		"webview-ui/src/components/chat/McpElicitationForm.tsx"
+	],
+	"files_to_modify": [
+		"src/services/mcp/McpHub.ts - Add progress, cancellation, and task management",
+		"src/services/mcp/TaskManager.ts - NEW: Task state machine and storage",
+		"src/services/mcp/ProgressTracker.ts - NEW: Track active progress tokens",
+		"packages/types/src/mcp.ts - Add Progress, Cancellation, Task type exports",
+		"webview-ui/src/components/chat/ProgressIndicator.tsx - NEW: Progress bar UI",
+		"webview-ui/src/components/chat/TaskStatusIndicator.tsx - NEW: Task progress UI"
+	],
+	"capabilities_declared": {
+		"roots": { "listChanged": true },
+		"sampling": {},
+		"elicitation": { "form": {} }
+	},
+	"capabilities_to_declare": {
+		"tasks": {
+			"list": {},
+			"cancel": {},
+			"requests": {
+				"tools": { "call": {} },
+				"sampling": { "createMessage": {} },
+				"elicitation": { "create": {} }
+			}
+		}
+	},
+	"type_check_status": {
+		"packages_types": "OK",
+		"webview_ui": "OK",
+		"pre_existing_errors_in_other_packages": true,
+		"notes": "LangSmith integration errors in telemetry package are pre-existing"
+	},
+	"test_server": {
+		"path": "/tmp/claude/.../scratchpad/test-sampling-server.mjs",
+		"tools": ["ask_llm", "ask_user_preferences", "simple_echo"]
+	},
+	"test_servers_needed": [
+		{
+			"name": "test-progress-server",
+			"purpose": "Test progress notifications",
+			"tools": ["slow_operation - Sends progress notifications during execution"]
+		},
+		{
+			"name": "test-tasks-server",
+			"purpose": "Test task-augmented tool calls",
+			"tools": [
+				"long_running_task - Returns CreateTaskResult, completes after delay",
+				"task_with_input - Moves to input_required, needs elicitation"
+			]
+		}
+	],
+	"future_enhancements": [
+		"Full LLM streaming integration for sampling responses",
+		"Auto-approval settings for trusted servers",
+		"URL mode support for elicitation"
+	],
+	"sdk_schemas_available": [
+		"ProgressTokenSchema",
+		"ProgressSchema",
+		"ProgressNotificationSchema",
+		"ProgressNotificationParamsSchema",
+		"CancelledNotificationSchema",
+		"CancelledNotificationParamsSchema",
+		"TaskSchema",
+		"TaskStatusSchema",
+		"TaskCreationParamsSchema",
+		"TaskMetadataSchema",
+		"CreateTaskResultSchema",
+		"GetTaskRequestSchema",
+		"GetTaskResultSchema",
+		"GetTaskPayloadRequestSchema",
+		"GetTaskPayloadResultSchema",
+		"ListTasksRequestSchema",
+		"ListTasksResultSchema",
+		"CancelTaskRequestSchema",
+		"CancelTaskResultSchema",
+		"TaskStatusNotificationSchema",
+		"ClientTasksCapabilitySchema",
+		"ServerTasksCapabilitySchema",
+		"TaskAugmentedRequestParamsSchema",
+		"RelatedTaskMetadataSchema",
+		"RELATED_TASK_META_KEY"
+	],
+	"implementation_order": [
+		"1. Implement Progress support (foundation for Tasks)",
+		"   a. Add progressToken to outgoing requests",
+		"   b. Handle notifications/progress from servers",
+		"   c. Send notifications/progress for sampling/elicitation",
+		"   d. Add progress UI component",
+		"2. Implement Cancellation support",
+		"   a. Add cancelRequest method with notifications/cancelled",
+		"   b. Handle notifications/cancelled from servers",
+		"   c. Track requests with AbortController",
+		"   d. Add cancel button UI",
+		"3. Implement Tasks (client-side)",
+		"   a. Declare tasks capability",
+		"   b. Modify callTool for task augmentation",
+		"   c. Implement tasks/get, tasks/result, tasks/list, tasks/cancel",
+		"   d. Handle notifications/tasks/status",
+		"4. Implement Tasks (receiver-side)",
+		"   a. Create TaskManager state machine",
+		"   b. Modify sampling/elicitation for task augmentation",
+		"   c. Handle tasks/* requests from servers",
+		"5. Add Task UI components"
+	],
+	"spec_references": {
+		"progress": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_progress.md",
+		"cancellation": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_cancellation.md",
+		"tasks": "ai_docs/mcp-2025-11-25/modelcontextprotocol.io_specification_2025-11-25_basic_utilities_tasks.md"
+	}
+}

@@ -1241,6 +1241,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		partial?: boolean,
 		progressStatus?: ToolProgressStatus,
 		isProtected?: boolean,
+		options?: { signal?: AbortSignal },
 	): Promise<{ response: ClineAskResponse; text?: string; images?: string[] }> {
 		// If this Cline instance was aborted by the provider, then the only
 		// thing keeping us alive is a promise still running in the background,
@@ -1252,6 +1253,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// still alive until this promise resolves or rejects.)
 		if (this.abort) {
 			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} aborted`)
+		}
+
+		// Check if an external abort signal has already been triggered
+		if (options?.signal?.aborted) {
+			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} cancelled via signal`)
 		}
 
 		let askTs: number
@@ -1420,37 +1426,58 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Wait for askResponse to be set
-		await pWaitFor(
-			() => {
-				if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
-					return true
-				}
+		// Track if aborted via external signal for MCP cancellation handlers
+		let wasAbortedViaSignal = false
+		const abortHandler = () => {
+			wasAbortedViaSignal = true
+		}
+		options?.signal?.addEventListener("abort", abortHandler)
 
-				// If a queued message arrives while we're blocked on an ask (e.g. a follow-up
-				// suggestion click that was incorrectly queued due to UI state), consume it
-				// immediately so the task doesn't hang.
-				if (!this.messageQueueService.isEmpty()) {
-					const message = this.messageQueueService.dequeueMessage()
-					if (message) {
-						// If this is a tool approval ask, we need to approve first (yesButtonClicked)
-						// and include any queued text/images.
-						if (
-							type === "tool" ||
-							type === "command" ||
-							type === "browser_action_launch" ||
-							type === "use_mcp_server"
-						) {
-							this.handleWebviewAskResponse("yesButtonClicked", message.text, message.images)
-						} else {
-							this.handleWebviewAskResponse("messageResponse", message.text, message.images)
+		try {
+			await pWaitFor(
+				() => {
+					// Check if external abort signal was triggered
+					if (options?.signal?.aborted) {
+						return true // Exit the wait loop
+					}
+
+					if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
+						return true
+					}
+
+					// If a queued message arrives while we're blocked on an ask (e.g. a follow-up
+					// suggestion click that was incorrectly queued due to UI state), consume it
+					// immediately so the task doesn't hang.
+					if (!this.messageQueueService.isEmpty()) {
+						const message = this.messageQueueService.dequeueMessage()
+						if (message) {
+							// If this is a tool approval ask, we need to approve first (yesButtonClicked)
+							// and include any queued text/images.
+							if (
+								type === "tool" ||
+								type === "command" ||
+								type === "browser_action_launch" ||
+								type === "use_mcp_server"
+							) {
+								this.handleWebviewAskResponse("yesButtonClicked", message.text, message.images)
+							} else {
+								this.handleWebviewAskResponse("messageResponse", message.text, message.images)
+							}
 						}
 					}
-				}
 
-				return false
-			},
-			{ interval: 100 },
-		)
+					return false
+				},
+				{ interval: 100 },
+			)
+		} finally {
+			options?.signal?.removeEventListener("abort", abortHandler)
+		}
+
+		// If we exited due to signal abort, throw an error
+		if (wasAbortedViaSignal || options?.signal?.aborted) {
+			throw new Error(`[RooCode#ask] task ${this.taskId}.${this.instanceId} cancelled via signal`)
+		}
 
 		if (this.lastMessageTs !== askTs) {
 			// Could happen if we send multiple asks in a row i.e. with
