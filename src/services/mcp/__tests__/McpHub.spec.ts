@@ -212,6 +212,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -380,6 +382,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -453,6 +457,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -663,6 +669,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -735,6 +743,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -1626,6 +1636,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}
 
 			Client.mockImplementation(() => mockClient)
@@ -1746,6 +1758,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Mock provider with mcpEnabled: true
@@ -1933,6 +1947,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Create a new McpHub instance
@@ -1995,6 +2011,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Create a new McpHub instance
@@ -2057,6 +2075,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Create a new McpHub instance
@@ -2126,6 +2146,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Create a new McpHub instance
@@ -2199,6 +2221,8 @@ describe("McpHub", () => {
 				close: vi.fn().mockResolvedValue(undefined),
 				getInstructions: vi.fn().mockReturnValue("test instructions"),
 				request: vi.fn().mockResolvedValue({ tools: [], resources: [], resourceTemplates: [] }),
+				setRequestHandler: vi.fn(),
+				setNotificationHandler: vi.fn(),
 			}))
 
 			// Create a new McpHub instance

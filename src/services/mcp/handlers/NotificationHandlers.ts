@@ -91,6 +91,20 @@ export function registerCancellationHandler(client: Client, context: HandlerCont
 			pendingRequest.controller.abort(reason)
 			// Clean up tracking
 			context.pendingRequests.delete(requestId)
+
+			// Notify webview so UI can show cancellation state
+			const provider = context.getProvider()
+			if (provider) {
+				await provider.postMessageToWebview({
+					type: "mcpCancelled",
+					payload: {
+						serverName: context.serverName,
+						requestId,
+						reason,
+						timestamp: Date.now(),
+					},
+				})
+			}
 		} else {
 			// Per MCP spec: ignore cancellation for unknown/completed requests
 			console.debug(`[McpHub] Ignoring cancellation for unknown request ${requestId}`)
