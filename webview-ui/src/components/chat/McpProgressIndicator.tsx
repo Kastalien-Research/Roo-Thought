@@ -6,6 +6,7 @@ import type { ExtensionMessage } from "@roo-code/types"
 interface McpProgressIndicatorProps {
 	serverName: string
 	progressToken: string | number
+	requestId?: string | number // Optional requestId for cancellation correlation
 }
 
 interface ProgressState {
@@ -14,7 +15,7 @@ interface ProgressState {
 	message?: string
 }
 
-function McpProgressIndicatorInner({ serverName, progressToken }: McpProgressIndicatorProps) {
+function McpProgressIndicatorInner({ serverName, progressToken, requestId }: McpProgressIndicatorProps) {
 	const [state, setState] = useState<ProgressState | null>(null)
 	const [cancelled, setCancelled] = useState(false)
 
@@ -40,12 +41,14 @@ function McpProgressIndicatorInner({ serverName, progressToken }: McpProgressInd
 					serverName: string
 					requestId: string | number
 				}
-				if (payload.serverName === serverName) {
+				// Only mark as cancelled if both serverName AND requestId match
+				// This prevents cancelling unrelated progress indicators on the same server
+				if (payload.serverName === serverName && requestId !== undefined && payload.requestId === requestId) {
 					setCancelled(true)
 				}
 			}
 		},
-		[serverName, progressToken],
+		[serverName, progressToken, requestId],
 	)
 
 	useEvent("message", onMessage)

@@ -2160,14 +2160,17 @@ export class McpHub {
 	/**
 	 * Generate a unique progress token for tracking long-running operations.
 	 * Call this before making a request that may report progress.
+	 * @param requestId Optional requestId to correlate with cancellation events
 	 */
 	generateProgressToken(
 		serverName: string,
 		callback?: (progress: number, total?: number, message?: string) => void,
+		requestId?: string | number,
 	): string {
 		const token = crypto.randomUUID()
 		this.activeProgressTokens.set(token, {
 			serverName,
+			requestId,
 			callback,
 			lastProgress: 0,
 		})
