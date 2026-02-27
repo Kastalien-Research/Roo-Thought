@@ -43,6 +43,7 @@ export interface ProviderAccess {
  */
 export interface ProgressTokenData {
 	serverName: string
+	requestId?: string | number // Track the originating requestId for cancellation correlation
 	callback?: (progress: number, total?: number, message?: string) => void
 	lastProgress: number
 }
