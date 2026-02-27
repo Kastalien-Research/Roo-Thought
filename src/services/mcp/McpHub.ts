@@ -10,11 +10,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import ReconnectingEventSource from "reconnecting-eventsource"
 import {
 	CallToolResultSchema,
+	CancelTaskResultSchema,
 	CompleteResultSchema,
+	CreateTaskResultSchema,
 	GetPromptResultSchema,
+	GetTaskResultSchema,
 	ListPromptsResultSchema,
 	ListResourcesResultSchema,
 	ListResourceTemplatesResultSchema,
+	ListTasksResultSchema,
 	ListToolsResultSchema,
 	ReadResourceResultSchema,
 } from "@modelcontextprotocol/sdk/types.js"
